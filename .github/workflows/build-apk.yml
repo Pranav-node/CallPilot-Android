@@ -44,6 +44,8 @@ jobs:
 
           if [ ! -f "$ZIP_FILE" ]; then
             echo "::error::Outer ZIP not found: $ZIP_FILE"
+            echo "Files in repository:"
+            find . -maxdepth 3 -type f -print
             exit 1
           fi
 
@@ -59,7 +61,7 @@ jobs:
             -name 'CallPilot-Kotlin-MVP.zip' -print -quit)"
 
           if [ -z "$INNER_ZIP" ]; then
-            echo "::error::Inner Android ZIP not found."
+            echo "::error::Inner Android project ZIP not found."
             find extracted -maxdepth 6 -type f -print
             exit 1
           fi
@@ -87,12 +89,13 @@ jobs:
           PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
 
           if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::error::Android app module not found."
+            echo "::error::Android app module not found in $PROJECT_DIR"
+            find "$PROJECT_DIR" -maxdepth 4 -type f -print
             exit 1
           fi
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Project directory: $PROJECT_DIR"
+          echo "Android project directory: $PROJECT_DIR"
 
       - name: Align Java and Kotlin JVM targets
         working-directory: ${{ steps.locate.outputs.project_dir }}
@@ -102,24 +105,25 @@ jobs:
 
           cat > "$RUNNER_TEMP/callpilot-jvm-fix.gradle" <<'EOF'
           allprojects {
-              tasks.withType(
-                  org.gradle.api.tasks.compile.JavaCompile
-              ).configureEach {
+              tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {
                   sourceCompatibility = "17"
                   targetCompatibility = "17"
               }
+          }
 
-              tasks.withType(
-                  org.jetbrains.kotlin.gradle.tasks.KotlinCompile
-              ).configureEach {
-                  kotlinOptions {
-                      jvmTarget = "17"
+          gradle.projectsEvaluated {
+              allprojects {
+                  tasks.configureEach { task ->
+                      if (task.name.toLowerCase().contains("kotlin") &&
+                          task.hasProperty("kotlinOptions")) {
+                          task.kotlinOptions.jvmTarget = "17"
+                      }
                   }
               }
           }
           EOF
 
-          echo "Java and Kotlin compilation targets will use JVM 17."
+          echo "Configured Java compilation for JVM 17."
 
       - name: Build debug APK
         working-directory: ${{ steps.locate.outputs.project_dir }}
@@ -134,26 +138,25 @@ jobs:
             assembleDebug
 
       - name: Find and prepare APK
-        id: apk
-        working-directory: ${{ steps.locate.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
 
-          APK_FILE="$(find app/build/outputs/apk/debug \
+          APK_FILE="$(find "${{ steps.locate.outputs.project_dir }}/app/build/outputs/apk/debug" \
             -type f -name '*.apk' -print -quit 2>/dev/null || true)"
 
           if [ -z "$APK_FILE" ]; then
             echo "::error::APK was not generated."
-            find app/build -maxdepth 8 -type f -print || true
+            find "${{ steps.locate.outputs.project_dir }}/app/build" \
+              -maxdepth 8 -type f -print || true
             exit 1
           fi
 
-          mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          cp "$APK_FILE" \
-            "$GITHUB_WORKSPACE/artifacts/CallPilot-debug.apk"
+          mkdir -p artifacts
+          cp "$APK_FILE" artifacts/CallPilot-debug.apk
 
-          ls -lh "$GITHUB_WORKSPACE/artifacts/CallPilot-debug.apk"
+          echo "APK generated successfully:"
+          ls -lh artifacts/CallPilot-debug.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
