@@ -1,3 +1,4 @@
+
 name: Build CallPilot APK
 
 on:
@@ -15,30 +16,26 @@ concurrency:
 
 jobs:
   build:
-    name: Build CallPilot Android APK
+    name: Build Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      # 1. Checkout the repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Set up Java
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # 3. Install Gradle because the project has no gradlew wrapper
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
 
-      # 4. Extract the outer ZIP
-      - name: Extract project ZIP
+      - name: Extract outer ZIP
         shell: bash
         run: |
           set -euo pipefail
@@ -46,20 +43,14 @@ jobs:
           ZIP_FILE="CallPilot-Phone-Cloud-Build.zip"
 
           if [ ! -f "$ZIP_FILE" ]; then
-            echo "::error::Missing $ZIP_FILE in repository root."
-            echo "Repository files:"
-            find . -maxdepth 3 -type f -print
+            echo "::error::Outer ZIP not found: $ZIP_FILE"
             exit 1
           fi
 
           mkdir -p extracted
           unzip -o "$ZIP_FILE" -d extracted
 
-          echo "Outer ZIP extracted successfully."
-          find extracted -maxdepth 4 -type f -print
-
-      # 5. Extract the inner Android project ZIP
-      - name: Extract Android project
+      - name: Extract Android project ZIP
         shell: bash
         run: |
           set -euo pipefail
@@ -68,7 +59,7 @@ jobs:
             -name 'CallPilot-Kotlin-MVP.zip' -print -quit)"
 
           if [ -z "$INNER_ZIP" ]; then
-            echo "::error::CallPilot-Kotlin-MVP.zip not found."
+            echo "::error::Inner Android ZIP not found."
             find extracted -maxdepth 6 -type f -print
             exit 1
           fi
@@ -76,17 +67,7 @@ jobs:
           mkdir -p android-project
           unzip -o "$INNER_ZIP" -d android-project
 
-          echo "Inner Android ZIP extracted successfully."
-          find android-project -maxdepth 5 -type f \
-            \( -name 'settings.gradle' \
-            -o -name 'settings.gradle.kts' \
-            -o -name 'build.gradle' \
-            -o -name 'build.gradle.kts' \
-            -o -name 'gradlew' \
-            -o -name 'gradle-wrapper.properties' \) -print
-
-      # 6. Locate the actual Gradle project
-      - name: Locate Gradle project
+      - name: Locate Android project
         id: locate
         shell: bash
         run: |
@@ -98,65 +79,82 @@ jobs:
             -print -quit)"
 
           if [ -z "$SETTINGS_FILE" ]; then
-            echo "::error::No Gradle settings file found."
+            echo "::error::Gradle settings file not found."
             find android-project -maxdepth 6 -type f -print
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
 
-          if [ ! -f "$PROJECT_DIR/build.gradle" ] && \
-             [ ! -f "$PROJECT_DIR/build.gradle.kts" ]; then
-            echo "::error::Root build.gradle file not found."
-            exit 1
-          fi
-
           if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::error::Android app directory not found."
+            echo "::error::Android app module not found."
             exit 1
           fi
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Project directory: $PROJECT_DIR"
 
-          echo "Gradle project: $PROJECT_DIR"
-          echo "Settings file: $SETTINGS_FILE"
-          ls -la "$PROJECT_DIR"
+      - name: Align Java and Kotlin JVM targets
+        working-directory: ${{ steps.locate.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      # 7. Build the debug APK
+          cat > "$RUNNER_TEMP/callpilot-jvm-fix.gradle" <<'EOF'
+          allprojects {
+              tasks.withType(
+                  org.gradle.api.tasks.compile.JavaCompile
+              ).configureEach {
+                  sourceCompatibility = "17"
+                  targetCompatibility = "17"
+              }
+
+              tasks.withType(
+                  org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+              ).configureEach {
+                  kotlinOptions {
+                      jvmTarget = "17"
+                  }
+              }
+          }
+          EOF
+
+          echo "Java and Kotlin compilation targets will use JVM 17."
+
       - name: Build debug APK
         working-directory: ${{ steps.locate.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
 
-          gradle --version
-          gradle --no-daemon --stacktrace assembleDebug
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            --init-script "$RUNNER_TEMP/callpilot-jvm-fix.gradle" \
+            assembleDebug
 
-      # 8. Verify the generated APK
-      - name: Verify APK
+      - name: Find and prepare APK
+        id: apk
+        working-directory: ${{ steps.locate.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
 
-          APK_FILE="$(find \
-            "${{ steps.locate.outputs.project_dir }}/app/build/outputs/apk" \
-            -type f -name '*.apk' -print -quit)"
+          APK_FILE="$(find app/build/outputs/apk/debug \
+            -type f -name '*.apk' -print -quit 2>/dev/null || true)"
 
           if [ -z "$APK_FILE" ]; then
-            echo "::error::No APK was generated."
-            echo "Build output files:"
-            find "${{ steps.locate.outputs.project_dir }}/app/build" \
-              -maxdepth 8 -type f -print || true
+            echo "::error::APK was not generated."
+            find app/build -maxdepth 8 -type f -print || true
             exit 1
           fi
 
-          mkdir -p artifacts
-          cp "$APK_FILE" artifacts/CallPilot-debug.apk
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          cp "$APK_FILE" \
+            "$GITHUB_WORKSPACE/artifacts/CallPilot-debug.apk"
 
-          echo "APK generated successfully:"
-          ls -lh artifacts/CallPilot-debug.apk
+          ls -lh "$GITHUB_WORKSPACE/artifacts/CallPilot-debug.apk"
 
-      # 9. Upload APK to GitHub Actions
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
