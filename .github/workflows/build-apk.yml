@@ -1,43 +1,65 @@
-
 name: Build CallPilot APK
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: callpilot-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    name: Build CallPilot Android APK
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
+      # 1. Checkout the repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK
+      # 2. Set up Java
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: Extract outer ZIP
+      # 3. Install Gradle because the project has no gradlew wrapper
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      # 4. Extract the outer ZIP
+      - name: Extract project ZIP
         shell: bash
         run: |
           set -euo pipefail
 
+          ZIP_FILE="CallPilot-Phone-Cloud-Build.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "::error::Missing $ZIP_FILE in repository root."
+            echo "Repository files:"
+            find . -maxdepth 3 -type f -print
+            exit 1
+          fi
+
           mkdir -p extracted
+          unzip -o "$ZIP_FILE" -d extracted
 
-          unzip -q CallPilot-Phone-Cloud-Build.zip \
-            -d extracted
+          echo "Outer ZIP extracted successfully."
+          find extracted -maxdepth 4 -type f -print
 
-          echo "Outer ZIP extracted."
-          find extracted -maxdepth 5 -type f
-
-      - name: Extract Android project ZIP
+      # 5. Extract the inner Android project ZIP
+      - name: Extract Android project
         shell: bash
         run: |
           set -euo pipefail
@@ -47,95 +69,98 @@ jobs:
 
           if [ -z "$INNER_ZIP" ]; then
             echo "::error::CallPilot-Kotlin-MVP.zip not found."
+            find extracted -maxdepth 6 -type f -print
             exit 1
           fi
 
           mkdir -p android-project
+          unzip -o "$INNER_ZIP" -d android-project
 
-          unzip -q "$INNER_ZIP" -d android-project
+          echo "Inner Android ZIP extracted successfully."
+          find android-project -maxdepth 5 -type f \
+            \( -name 'settings.gradle' \
+            -o -name 'settings.gradle.kts' \
+            -o -name 'build.gradle' \
+            -o -name 'build.gradle.kts' \
+            -o -name 'gradlew' \
+            -o -name 'gradle-wrapper.properties' \) -print
 
-          echo "Android project archive extracted."
-          echo "Project files:"
-          find android-project -maxdepth 5 -type f | head -200
-
+      # 6. Locate the actual Gradle project
       - name: Locate Gradle project
         id: locate
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Searching for Gradle wrapper..."
+          SETTINGS_FILE="$(find android-project -type f \
+            \( -name 'settings.gradle' \
+            -o -name 'settings.gradle.kts' \) \
+            -print -quit)"
 
-          GRADLEW="$(find android-project \
-            -type f -name gradlew -print -quit)"
-
-          if [ -z "$GRADLEW" ]; then
-            echo "::error::No gradlew found in the inner ZIP."
-            echo "Checking for Gradle build files..."
-
-            find android-project -type f \
-              \( -name settings.gradle \
-              -o -name settings.gradle.kts \
-              -o -name build.gradle \
-              -o -name build.gradle.kts \) -print
-
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "::error::No Gradle settings file found."
+            find android-project -maxdepth 6 -type f -print
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$GRADLEW")"
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
 
-          if [ ! -f "$PROJECT_DIR/settings.gradle" ] && \
-             [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
-            echo "::error::Gradle settings file not found beside gradlew."
+          if [ ! -f "$PROJECT_DIR/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/build.gradle.kts" ]; then
+            echo "::error::Root build.gradle file not found."
             exit 1
           fi
 
-          chmod +x "$GRADLEW"
+          if [ ! -d "$PROJECT_DIR/app" ]; then
+            echo "::error::Android app directory not found."
+            exit 1
+          fi
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-          echo "Gradle project found at: $PROJECT_DIR"
+          echo "Gradle project: $PROJECT_DIR"
+          echo "Settings file: $SETTINGS_FILE"
+          ls -la "$PROJECT_DIR"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
+      # 7. Build the debug APK
       - name: Build debug APK
         working-directory: ${{ steps.locate.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
 
-          ./gradlew --no-daemon assembleDebug
+          gradle --version
+          gradle --no-daemon --stacktrace assembleDebug
 
-      - name: Locate generated APK
-        id: apk
+      # 8. Verify the generated APK
+      - name: Verify APK
         shell: bash
         run: |
           set -euo pipefail
 
-          PROJECT_DIR="${{ steps.locate.outputs.project_dir }}"
+          APK_FILE="$(find \
+            "${{ steps.locate.outputs.project_dir }}/app/build/outputs/apk" \
+            -type f -name '*.apk' -print -quit)"
 
-          APK="$(find "$PROJECT_DIR" -type f \
-            -path '*/build/outputs/apk/debug/*.apk' \
-            -print -quit)"
-
-          if [ -z "$APK" ]; then
-            echo "::error::Debug APK was not generated."
+          if [ -z "$APK_FILE" ]; then
+            echo "::error::No APK was generated."
+            echo "Build output files:"
+            find "${{ steps.locate.outputs.project_dir }}/app/build" \
+              -maxdepth 8 -type f -print || true
             exit 1
           fi
 
           mkdir -p artifacts
-          cp "$APK" artifacts/CallPilot-debug.apk
+          cp "$APK_FILE" artifacts/CallPilot-debug.apk
 
-          echo "APK_PATH=artifacts/CallPilot-debug.apk" \
-            >> "$GITHUB_ENV"
+          echo "APK generated successfully:"
+          ls -lh artifacts/CallPilot-debug.apk
 
-          echo "APK generated successfully."
-
-      - name: Upload APK
+      # 9. Upload APK to GitHub Actions
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CallPilot-debug-apk
+          name: CallPilot-debug-APK
           path: artifacts/CallPilot-debug.apk
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
