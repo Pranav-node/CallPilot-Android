@@ -44,7 +44,6 @@ jobs:
 
           if [ ! -f "$ZIP_FILE" ]; then
             echo "::error::Outer ZIP not found: $ZIP_FILE"
-            echo "Files in repository:"
             find . -maxdepth 3 -type f -print
             exit 1
           fi
@@ -89,30 +88,43 @@ jobs:
           PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
 
           if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::error::Android app module not found in $PROJECT_DIR"
-            find "$PROJECT_DIR" -maxdepth 4 -type f -print
+            echo "::error::Android app module not found."
+            find "$PROJECT_DIR" -maxdepth 5 -type f -print
             exit 1
           fi
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           echo "Android project directory: $PROJECT_DIR"
 
-      - name: Align Java and Kotlin JVM targets
-        working-directory: ${{ steps.locate.outputs.project_dir }}
+      - name: Create JVM compatibility fix
         shell: bash
         run: |
           set -euo pipefail
 
           cat > "$RUNNER_TEMP/callpilot-jvm-fix.gradle" <<'EOF'
+          import org.gradle.api.tasks.compile.JavaCompile
+
           allprojects {
-              tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {
+              tasks.withType(JavaCompile).configureEach {
                   sourceCompatibility = "17"
                   targetCompatibility = "17"
+              }
+
+              tasks.configureEach { task ->
+                  if (task.name.toLowerCase().contains("kotlin") &&
+                      task.hasProperty("kotlinOptions")) {
+                      task.kotlinOptions.jvmTarget = "17"
+                  }
               }
           }
 
           gradle.projectsEvaluated {
               allprojects {
+                  tasks.withType(JavaCompile).configureEach {
+                      sourceCompatibility = "17"
+                      targetCompatibility = "17"
+                  }
+
                   tasks.configureEach { task ->
                       if (task.name.toLowerCase().contains("kotlin") &&
                           task.hasProperty("kotlinOptions")) {
@@ -122,8 +134,6 @@ jobs:
               }
           }
           EOF
-
-          echo "Configured Java compilation for JVM 17."
 
       - name: Build debug APK
         working-directory: ${{ steps.locate.outputs.project_dir }}
@@ -142,12 +152,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          APK_FILE="$(find "${{ steps.locate.outputs.project_dir }}/app/build/outputs/apk/debug" \
+          PROJECT_DIR="${{ steps.locate.outputs.project_dir }}"
+
+          APK_FILE="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
             -type f -name '*.apk' -print -quit 2>/dev/null || true)"
 
           if [ -z "$APK_FILE" ]; then
             echo "::error::APK was not generated."
-            find "${{ steps.locate.outputs.project_dir }}/app/build" \
+            find "$PROJECT_DIR/app/build" \
               -maxdepth 8 -type f -print || true
             exit 1
           fi
@@ -155,7 +167,7 @@ jobs:
           mkdir -p artifacts
           cp "$APK_FILE" artifacts/CallPilot-debug.apk
 
-          echo "APK generated successfully:"
+          echo "APK created:"
           ls -lh artifacts/CallPilot-debug.apk
 
       - name: Upload APK artifact
