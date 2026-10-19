@@ -24,43 +24,118 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Extract project ZIP
+      - name: Extract outer ZIP
+        shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p extracted
-          unzip -q CallPilot-Phone-Cloud-Build.zip -d extracted
 
-      - name: Locate Gradle project
-        id: locate
+          unzip -q CallPilot-Phone-Cloud-Build.zip \
+            -d extracted
+
+          echo "Outer ZIP extracted."
+          find extracted -maxdepth 5 -type f
+
+      - name: Extract Android project ZIP
+        shell: bash
         run: |
-          echo "Searching extracted project..."
-          find extracted -maxdepth 6 -type f \
-            \( -name gradlew -o -name settings.gradle \
-            -o -name settings.gradle.kts \) -print
+          set -euo pipefail
 
-          GRADLEW=$(find extracted -type f \
-            -name gradlew | head -n 1)
+          INNER_ZIP="$(find extracted -type f \
+            -name 'CallPilot-Kotlin-MVP.zip' -print -quit)"
 
-          if [ -z "$GRADLEW" ]; then
-            echo "::error::No gradlew found in ZIP. Check its contents."
-            echo "ZIP contents:"
-            unzip -l CallPilot-Phone-Cloud-Build.zip
+          if [ -z "$INNER_ZIP" ]; then
+            echo "::error::CallPilot-Kotlin-MVP.zip not found."
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$GRADLEW")
-          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          mkdir -p android-project
+
+          unzip -q "$INNER_ZIP" -d android-project
+
+          echo "Android project archive extracted."
+          echo "Project files:"
+          find android-project -maxdepth 5 -type f | head -200
+
+      - name: Locate Gradle project
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Searching for Gradle wrapper..."
+
+          GRADLEW="$(find android-project \
+            -type f -name gradlew -print -quit)"
+
+          if [ -z "$GRADLEW" ]; then
+            echo "::error::No gradlew found in the inner ZIP."
+            echo "Checking for Gradle build files..."
+
+            find android-project -type f \
+              \( -name settings.gradle \
+              -o -name settings.gradle.kts \
+              -o -name build.gradle \
+              -o -name build.gradle.kts \) -print
+
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$GRADLEW")"
+
+          if [ ! -f "$PROJECT_DIR/settings.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+            echo "::error::Gradle settings file not found beside gradlew."
+            exit 1
+          fi
+
           chmod +x "$GRADLEW"
+
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+          echo "Gradle project found at: $PROJECT_DIR"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build debug APK
         working-directory: ${{ steps.locate.outputs.project_dir }}
-        run: ./gradlew assembleDebug
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Locate generated APK
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT_DIR="${{ steps.locate.outputs.project_dir }}"
+
+          APK="$(find "$PROJECT_DIR" -type f \
+            -path '*/build/outputs/apk/debug/*.apk' \
+            -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "::error::Debug APK was not generated."
+            exit 1
+          fi
+
+          mkdir -p artifacts
+          cp "$APK" artifacts/CallPilot-debug.apk
+
+          echo "APK_PATH=artifacts/CallPilot-debug.apk" \
+            >> "$GITHUB_ENV"
+
+          echo "APK generated successfully."
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: CallPilot-debug-apk
-          path: extracted/**/app/build/outputs/apk/debug/app-debug.apk
+          path: artifacts/CallPilot-debug.apk
           if-no-files-found: error
+          retention-days: 7
