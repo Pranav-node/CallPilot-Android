@@ -13,6 +13,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,23 +27,30 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Extract project ZIP
-        run: |
-          unzip -o CallPilot-Phone-Cloud-Build.zip -d extracted
-          find extracted -name gradlew -type f
-
       - name: Locate Gradle project
+        id: project
+        shell: bash
         run: |
-          GRADLEW=$(find extracted -name gradlew -type f | head -n 1)
+          echo "Repository files:"
+          find . -maxdepth 4 -type f \
+            \( -name gradlew -o -name settings.gradle \
+            -o -name settings.gradle.kts \)
+
+          GRADLEW=$(find . -type f -name gradlew \
+            -not -path '*/.git/*' | head -n 1)
+
           if [ -z "$GRADLEW" ]; then
-            echo "ERROR: gradlew not found in ZIP"
+            echo "::error::No gradlew found. Check that the Android project is committed to the repository."
             exit 1
           fi
-          echo "PROJECT_DIR=$(dirname "$GRADLEW")" >> "$GITHUB_ENV"
+
+          PROJECT_DIR=$(dirname "$GRADLEW")
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Found Gradle wrapper in $PROJECT_DIR"
 
       - name: Build debug APK
+        working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
-          cd "$PROJECT_DIR"
           chmod +x ./gradlew
           ./gradlew assembleDebug
 
@@ -50,5 +58,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: CallPilot-debug-apk
-          path: extracted/**/app/build/outputs/apk/debug/app-debug.apk
+          path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
