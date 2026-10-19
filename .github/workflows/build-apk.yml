@@ -24,39 +24,43 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Extract project ZIP
+        run: |
+          mkdir -p extracted
+          unzip -q CallPilot-Phone-Cloud-Build.zip -d extracted
 
       - name: Locate Gradle project
-        id: project
-        shell: bash
+        id: locate
         run: |
-          echo "Repository files:"
-          find . -maxdepth 4 -type f \
+          echo "Searching extracted project..."
+          find extracted -maxdepth 6 -type f \
             \( -name gradlew -o -name settings.gradle \
-            -o -name settings.gradle.kts \)
+            -o -name settings.gradle.kts \) -print
 
-          GRADLEW=$(find . -type f -name gradlew \
-            -not -path '*/.git/*' | head -n 1)
+          GRADLEW=$(find extracted -type f \
+            -name gradlew | head -n 1)
 
           if [ -z "$GRADLEW" ]; then
-            echo "::error::No gradlew found. Check that the Android project is committed to the repository."
+            echo "::error::No gradlew found in ZIP. Check its contents."
+            echo "ZIP contents:"
+            unzip -l CallPilot-Phone-Cloud-Build.zip
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$GRADLEW")
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Found Gradle wrapper in $PROJECT_DIR"
+          chmod +x "$GRADLEW"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Build debug APK
-        working-directory: ${{ steps.project.outputs.project_dir }}
-        run: |
-          chmod +x ./gradlew
-          ./gradlew assembleDebug
+        working-directory: ${{ steps.locate.outputs.project_dir }}
+        run: ./gradlew assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: CallPilot-debug-apk
-          path: '**/build/outputs/apk/debug/*.apk'
+          path: extracted/**/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
