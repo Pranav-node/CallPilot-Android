@@ -24,6 +24,15 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Fallback route so Android can recognize CallPilot as an assistant app. -->
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VOICE_ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
 
         <!-- Android keeps the user's selected VoiceInteractionService available. -->
@@ -32,12 +41,26 @@
             android:label="CallPilot"
             android:permission="android.permission.BIND_VOICE_INTERACTION"
             android:exported="true">
-            <intent-filter>
+            <intent-filter android:priority="-1">
                 <action android:name="android.service.voice.VoiceInteractionService" />
             </intent-filter>
             <meta-data
                 android:name="android.voice_interaction"
                 android:resource="@xml/voice_interaction_service" />
+        </service>
+
+        <!-- Voice assistants must publish their recognition-service implementation. -->
+        <service
+            android:name=".CallPilotRecognitionService"
+            android:label="CallPilot speech recognition"
+            android:exported="true">
+            <intent-filter android:priority="-1">
+                <action android:name="android.speech.RecognitionService" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="android.speech"
+                android:resource="@xml/recognition_service" />
         </service>
 
         <service

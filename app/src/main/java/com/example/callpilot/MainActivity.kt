@@ -163,9 +163,13 @@ class MainActivity : Activity() {
     }
 
     private fun handleAssistantIntent(incoming: Intent?) {
-        if (incoming?.getBooleanExtra(AssistantActions.EXTRA_START_SPEECH, false) == true) {
-            incoming.removeExtra(AssistantActions.EXTRA_START_SPEECH)
-            window.decorView.postDelayed({ startSpeechRecognition() }, 500L)
+        val launchedAsAssistant = incoming?.action == Intent.ACTION_ASSIST ||
+            incoming?.action == "android.intent.action.VOICE_ASSIST"
+        val shouldStartSpeech = launchedAsAssistant ||
+            incoming?.getBooleanExtra(AssistantActions.EXTRA_START_SPEECH, false) == true
+        if (shouldStartSpeech) {
+            incoming?.removeExtra(AssistantActions.EXTRA_START_SPEECH)
+            window.decorView.postDelayed({ startSpeechRecognition() }, 650L)
         }
     }
 
