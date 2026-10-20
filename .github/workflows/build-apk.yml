@@ -1,4 +1,3 @@
-
 name: Build CallPilot APK
 
 on:
@@ -16,164 +15,79 @@ concurrency:
 
 jobs:
   build:
-    name: Build Android APK
+    name: Build Android debug APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
-      - name: Checkout repository
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
-      - name: Set up Gradle
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "platform-tools"
+          sdkmanager --list_installed
+
+      - name: Set up Gradle 8.10.2
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
 
-      - name: Extract outer ZIP
+      - name: Validate Android project files
         shell: bash
         run: |
           set -euo pipefail
-
-          ZIP_FILE="CallPilot-Phone-Cloud-Build.zip"
-
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "::error::Outer ZIP not found: $ZIP_FILE"
-            find . -maxdepth 3 -type f -print
+          test -f settings.gradle.kts || {
+            echo "::error::settings.gradle.kts must be at the repository root."
             exit 1
-          fi
-
-          mkdir -p extracted
-          unzip -o "$ZIP_FILE" -d extracted
-
-      - name: Extract Android project ZIP
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          INNER_ZIP="$(find extracted -type f \
-            -name 'CallPilot-Kotlin-MVP.zip' -print -quit)"
-
-          if [ -z "$INNER_ZIP" ]; then
-            echo "::error::Inner Android project ZIP not found."
-            find extracted -maxdepth 6 -type f -print
-            exit 1
-          fi
-
-          mkdir -p android-project
-          unzip -o "$INNER_ZIP" -d android-project
-
-      - name: Locate Android project
-        id: locate
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SETTINGS_FILE="$(find android-project -type f \
-            \( -name 'settings.gradle' \
-            -o -name 'settings.gradle.kts' \) \
-            -print -quit)"
-
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "::error::Gradle settings file not found."
-            find android-project -maxdepth 6 -type f -print
-            exit 1
-          fi
-
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-
-          if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::error::Android app module not found."
-            find "$PROJECT_DIR" -maxdepth 5 -type f -print
-            exit 1
-          fi
-
-          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Android project directory: $PROJECT_DIR"
-
-      - name: Create JVM compatibility fix
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cat > "$RUNNER_TEMP/callpilot-jvm-fix.gradle" <<'EOF'
-          import org.gradle.api.tasks.compile.JavaCompile
-
-          allprojects {
-              tasks.withType(JavaCompile).configureEach {
-                  sourceCompatibility = "17"
-                  targetCompatibility = "17"
-              }
-
-              tasks.configureEach { task ->
-                  if (task.name.toLowerCase().contains("kotlin") &&
-                      task.hasProperty("kotlinOptions")) {
-                      task.kotlinOptions.jvmTarget = "17"
-                  }
-              }
           }
-
-          gradle.projectsEvaluated {
-              allprojects {
-                  tasks.withType(JavaCompile).configureEach {
-                      sourceCompatibility = "17"
-                      targetCompatibility = "17"
-                  }
-
-                  tasks.configureEach { task ->
-                      if (task.name.toLowerCase().contains("kotlin") &&
-                          task.hasProperty("kotlinOptions")) {
-                          task.kotlinOptions.jvmTarget = "17"
-                      }
-                  }
-              }
+          test -f app/build.gradle.kts || {
+            echo "::error::app/build.gradle.kts was not found."
+            exit 1
           }
-          EOF
+          echo "Android project root: $GITHUB_WORKSPACE"
 
       - name: Build debug APK
-        working-directory: ${{ steps.locate.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
+          gradle --no-daemon --stacktrace --warning-mode all assembleDebug
 
-          gradle \
-            --no-daemon \
-            --stacktrace \
-            --init-script "$RUNNER_TEMP/callpilot-jvm-fix.gradle" \
-            assembleDebug
-
-      - name: Find and prepare APK
+      - name: Verify APK exists
         shell: bash
         run: |
           set -euo pipefail
-
-          PROJECT_DIR="${{ steps.locate.outputs.project_dir }}"
-
-          APK_FILE="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
-            -type f -name '*.apk' -print -quit 2>/dev/null || true)"
-
-          if [ -z "$APK_FILE" ]; then
-            echo "::error::APK was not generated."
-            find "$PROJECT_DIR/app/build" \
-              -maxdepth 8 -type f -print || true
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -f "$APK" ]; then
+            echo "::error::Expected APK was not created: $APK"
+            find app/build/outputs -maxdepth 6 -type f -print 2>/dev/null || true
             exit 1
           fi
+          ls -lh "$APK"
+          sha256sum "$APK"
 
-          mkdir -p artifacts
-          cp "$APK_FILE" artifacts/CallPilot-debug.apk
-
-          echo "APK created:"
-          ls -lh artifacts/CallPilot-debug.apk
-
-      - name: Upload APK artifact
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: CallPilot-debug-APK
-          path: artifacts/CallPilot-debug.apk
+          name: CallPilot-Assistant-Preview-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
